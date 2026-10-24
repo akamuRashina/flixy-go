@@ -44,6 +44,24 @@ function combineLists(list1, list2, list3) {
   return combined;
 }
 
+// ================= 0. ENDPOINT ROOT / STATUS =================
+app.get('/', (req, res) => {
+  res.json({
+    success: true,
+    message: '🚀 FlixyGo Scraper API is Live!',
+    endpoints: {
+      home: '/api/home',
+      search: '/api/search?q=demon',
+      movie_detail: '/api/movie/detail/:slug',
+      movie_stream: '/api/movie/stream/:slug',
+      anime_detail: '/api/anime/detail/:slug',
+      anime_stream: '/api/anime/stream/:slug',
+      kdrama_detail: '/api/kdrama/detail/:slug',
+      kdrama_stream: '/api/kdrama/stream/:slug'
+    }
+  });
+});
+
 let homeCache = null;
 let homeCacheExpiry = 0;
 const HOME_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
@@ -220,13 +238,15 @@ if (!process.env.VERCEL) {
 
 // Puppeteer keeps one shared browser instance alive across requests (see
 // scrapers/browserPool.js) for performance — close it cleanly on shutdown.
-process.on('SIGINT', async () => {
-  await closeSharedBrowser();
-  process.exit(0);
-});
-process.on('SIGTERM', async () => {
-  await closeSharedBrowser();
-  process.exit(0);
-});
+if (!process.env.VERCEL) {
+  process.on('SIGINT', async () => {
+    await closeSharedBrowser();
+    process.exit(0);
+  });
+  process.on('SIGTERM', async () => {
+    await closeSharedBrowser();
+    process.exit(0);
+  });
+}
 
 module.exports = app;
