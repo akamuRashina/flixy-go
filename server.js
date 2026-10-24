@@ -26,7 +26,7 @@ const {
 
 const { syncMovies, syncAnime, syncKDrama } = require('./syncSupabase');
 
-const { closeBrowser: closeSharedBrowser } = require('./scrapers/browserPool');
+const { closeBrowser: closeSharedBrowser } = require('./scrapers/browserpool');
 
 const app = express();
 app.use(cors());

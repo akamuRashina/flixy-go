@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { withPage, gotoWithRetry } = require('./browserPool');
+const { withPage, gotoWithRetry } = require('./browserpool');
 
 const BASE_URL = 'https://dramacool9.com.ro';
 const headers = {

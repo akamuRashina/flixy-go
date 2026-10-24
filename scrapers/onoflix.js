@@ -1,4 +1,4 @@
-const { withPage } = require('./browserPool');
+const { withPage } = require('./browserpool');
 
 const BASE_URL = 'https://onoflix.com';
 
