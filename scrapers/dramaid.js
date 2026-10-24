@@ -11,32 +11,28 @@ const headers = {
 // Episode pages look like /<slug>-episode-<n>.html — series root pages are
 // just /<slug>. Matching on that trailing pattern lets us tell them apart
 // without guessing CSS classes.
-const EPISODE_LINK_RE = /\/([a-z0-9-]+)-episode-(\d+)\.html$/i;
+const EPISODE_LINK_RE = /\/([a-z0-9-]+)-episode-(\d+)[a-z0-9-]*\.html$/i;
 
 // Given either an episode slug ("payback-2026-episode-9.html") or a series
 // root slug ("payback-2026"), return the series root slug.
 function toSeriesSlug(slug) {
   const clean = slug.replace(/^\/|\/$/g, '');
-  const match = clean.match(/^(.+?)-episode-\d+\.html$/i);
+  const match = clean.match(/^(.+?)-episode-\d+/i);
   return match ? match[1] : clean;
 }
 
-// Confirmed live format: "Genres: [Historical], [Romance]" — a single line
-// with comma-separated genre links, followed by the next field label
-// (usually "Starring:"). Stop at the next generic "Label:" pattern rather
-// than hardcoding which label comes next, since that varies per drama.
-function extractGenresFromBodyText(bodyText) {
-  const genreMatch = bodyText.match(/Genres?:\s*(.*?)(?=\s+[A-Z][a-zA-Z ]{2,20}:|$)/);
-  return genreMatch ? genreMatch[1].split(',').map((g) => g.trim()).filter(Boolean) : [];
+function extractGenres($, bodyText) {
+  if ($) {
+    const genreP = $('p').filter((_, el) => /Genres?:/i.test($(el).text())).first();
+    if (genreP.length) {
+      const raw = genreP.text().replace(/Genres?:/i, '').trim();
+      return raw.split(',').map((g) => g.trim()).filter((g) => g && g.length < 30);
+    }
+  }
+  const genreMatch = (bodyText || '').match(/Genres?:\s*([A-Za-z, -]+?)(?=\s+[A-Z][a-zA-Z ]{2,20}:|$)/);
+  return genreMatch ? genreMatch[1].split(',').map((g) => g.trim()).filter((g) => g && g.length < 30) : [];
 }
 
-// List/search pages (homepage rails, search results, popular-drama page)
-// contain NO <img> tags at all for their items, and don't show genre
-// either — confirmed directly against the live HTML, not a scraping miss.
-// Both only exist on each drama's own series page, so fetch that once per
-// item and pull both out together (rather than two separate requests).
-// Cache by slug since neither poster nor genre changes for a given drama,
-// so repeated home-page loads don't keep re-fetching the same series.
 const seriesExtrasCache = new Map(); // seriesSlug -> { data: {poster, genres}, expires }
 const SERIES_EXTRAS_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -50,7 +46,7 @@ async function fetchSeriesExtras(seriesSlug) {
     const $ = cheerio.load(data);
     const width = parseInt($('meta[property="og:image:width"]').attr('content') || '0', 10);
     const poster = width >= 100 ? ($('meta[property="og:image"]').attr('content') || null) : null;
-    const genres = extractGenresFromBodyText($('body').text().replace(/\s+/g, ' ').trim());
+    const genres = extractGenres($, $('body').text().replace(/\s+/g, ' ').trim());
     extras = { poster, genres };
   } catch {
     // leave defaults rather than failing the whole list
@@ -70,7 +66,10 @@ function extractEpisodeListFromHtml(html, badge) {
   const $ = cheerio.load(html);
   const seen = new Map();
 
-  $('a[href]').each((_, el) => {
+  const container = $('.tab-recent-episode, main, .content-area').first();
+  const scope = container.length ? container : $('body');
+
+  scope.find('a[href]').each((_, el) => {
     const href = $(el).attr('href');
     if (!href || !EPISODE_LINK_RE.test(href)) return;
     if (seen.has(href)) return;
@@ -78,15 +77,14 @@ function extractEpisodeListFromHtml(html, badge) {
     const title = ($(el).attr('title') || $(el).text() || '').trim();
     if (!title) return;
 
-    const slug = href.split('/').filter(Boolean).pop(); // e.g. "payback-2026-episode-9.html"
-
+    const slug = href.split('/').filter(Boolean).pop();
     seen.set(href, { title, poster: null, slug, type: 'kdrama', badge });
   });
 
   return Array.from(seen.values());
 }
 
-// 1. KDrama Terbaru (latest episode updates, straight off the homepage)
+// 1. KDrama Terbaru
 async function getLatestKDrama() {
   try {
     const { data } = await axios.get(BASE_URL, { headers });
@@ -103,29 +101,24 @@ async function getPopularKDrama() {
   try {
     const { data } = await axios.get(`${BASE_URL}/all-most-popular-dramaz`, { headers });
     const $ = cheerio.load(data);
-    const seen = new Map();
+    const list = [];
+    const seen = new Set();
 
-    // This page lists drama *series* (no -episode-N suffix), not episodes.
-    // Confirmed directly against the live HTML: there are no <img> tags on
-    // this page at all (same as the homepage rails), so posters are filled
-    // in below via enrichWithExtras rather than scraped here.
-    $('a[href]').each((_, el) => {
-      const href = $(el).attr('href');
+    $('main.site-main ul.box li, .switch-block ul.box li').each((_, el) => {
+      const a = $(el).find('a').first();
+      const href = a.attr('href');
       if (!href) return;
-      const path = href.replace(BASE_URL, '');
-      if (!/^\/[a-z0-9-]+$/i.test(path)) return; // series root pages only
-      if (seen.has(href)) return;
+      const slug = href.replace(BASE_URL, '').replace(/^\/|\/$/g, '');
+      if (!slug || seen.has(slug)) return;
+      seen.add(slug);
 
-      const title = ($(el).attr('title') || $(el).text() || '').trim();
-      if (!title) return;
+      const title = $(el).find('h3').text().trim() || a.attr('title') || slug;
+      const poster = $(el).find('img').attr('data-original') || $(el).find('img').attr('src') || null;
 
-      const slug = path.replace(/^\//, '');
-
-      seen.set(href, { title, poster: null, slug, type: 'kdrama', badge: 'Populer' });
+      list.push({ title, poster, slug, type: 'kdrama', badge: 'Populer' });
     });
 
-    const list = Array.from(seen.values()).slice(0, 20);
-    return await enrichWithExtras(list);
+    return await enrichWithExtras(list.slice(0, 20));
   } catch (error) {
     console.error('❌ Error Dramacool Popular:', error.message);
     return [];
@@ -136,8 +129,29 @@ async function getPopularKDrama() {
 async function searchKDrama(query) {
   try {
     const { data } = await axios.get(`${BASE_URL}/?s=${encodeURIComponent(query)}`, { headers });
-    const list = extractEpisodeListFromHtml(data, undefined);
-    return await enrichWithExtras(list);
+    const $ = cheerio.load(data);
+    const list = [];
+    const seen = new Set();
+
+    $('main.site-main ul.box li, .switch-block ul.box li').each((_, el) => {
+      const a = $(el).find('a').first();
+      const href = a.attr('href');
+      if (!href) return;
+      const slug = href.replace(BASE_URL, '').replace(/^\/|\/$/g, '');
+      if (!slug || seen.has(slug)) return;
+      seen.add(slug);
+
+      const title = $(el).find('h3').text().trim() || a.attr('title') || slug;
+      const poster = $(el).find('img').attr('data-original') || $(el).find('img').attr('src') || null;
+
+      list.push({ title, poster, slug, type: 'kdrama' });
+    });
+
+    if (list.length > 0) {
+      return await enrichWithExtras(list.slice(0, 20));
+    }
+
+    return [];
   } catch (error) {
     console.error('❌ Error Dramacool Search:', error.message);
     return [];
@@ -145,37 +159,18 @@ async function searchKDrama(query) {
 }
 
 // 4. Detail KDrama
-// `slug` is a series root slug, e.g. "payback-2026" (no .html)
 async function getKDramaDetail(slug) {
   try {
-    // Callers may hand this either a series root slug ("payback-2026") or
-    // an episode slug ("payback-2026-episode-9.html") — the latter is what
-    // getLatestKDrama/searchKDrama's `slug` field actually contains. That
-    // mismatch was the real cause of "poster is the site logo": episode
-    // pages don't carry their own poster/full synopsis at all, only the
-    // series root page does, so fetching an episode slug here always hit
-    // a page with nothing real to scrape. Normalize down to the series
-    // root regardless of which shape came in.
     const cleanSlug = toSeriesSlug(slug);
     const { data } = await axios.get(`${BASE_URL}/${cleanSlug}`, { headers });
     const $ = cheerio.load(data);
 
     const title = $('h1').first().text().replace(/English SUB.*$/i, '').trim();
-
-    // The SEO plugin falls og:image back to the site's own tiny default
-    // logo (32x32) whenever a page has no dedicated poster set. Real
-    // posters here are ~300x420ish, so use the width the same plugin
-    // emits alongside it (og:image:width) to filter that fallback out
-    // instead of trusting og:image blindly.
     const ogImageWidth = parseInt($('meta[property="og:image:width"]').attr('content') || '0', 10);
     const poster = ogImageWidth >= 100
       ? ($('meta[property="og:image"]').attr('content') || '')
       : '';
 
-    // meta og:description is truncated to ~155 chars by the SEO plugin —
-    // the FULL synopsis lives in the page body right after a "Synopsis:"
-    // label. Pull that instead, and only fall back to the (possibly
-    // truncated) meta tag if the label isn't found for some reason.
     const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
     const synMatch = bodyText.match(
       /Synopsis:\s*(.*?)\s*(?:Also known as:|Country:|Status:|Release Year:|Genres:)/
@@ -184,30 +179,40 @@ async function getKDramaDetail(slug) {
       ? synMatch[1].trim()
       : ($('meta[property="og:description"]').attr('content') || '');
 
-    const genres = extractGenresFromBodyText(bodyText);
+    const genres = extractGenres($, bodyText);
     seriesExtrasCache.set(cleanSlug, { data: { poster, genres }, expires: Date.now() + SERIES_EXTRAS_CACHE_TTL_MS });
 
     const episodes = [];
-    $('a[href]').each((_, el) => {
+    $('ul.list li a, .list-episode-item-2 li a').each((_, el) => {
       const href = $(el).attr('href');
       if (!href || !EPISODE_LINK_RE.test(href)) return;
       const epSlug = href.split('/').filter(Boolean).pop();
 
-      // The page often has a "Related/Recommended Dramas" sidebar whose
-      // episode links match this same pattern but belong to a COMPLETELY
-      // DIFFERENT drama — scanning the whole page for any episode-shaped
-      // link (as this used to) mixed those in, which is exactly why the
-      // wrong episode would sometimes play, or a single-episode drama
-      // would appear to have extra episodes. Only keep links whose slug
-      // is actually prefixed with this series' own slug.
-      if (!epSlug.toLowerCase().startsWith(`${cleanSlug.toLowerCase()}-episode-`)) return;
-
       const match = href.match(EPISODE_LINK_RE);
       const epNum = parseInt(match[2], 10);
       if (!episodes.find((e) => e.slug === epSlug)) {
-        episodes.push({ number: epNum, title: `Episode ${epNum}`, slug: epSlug });
+        episodes.push({ number: epNum, title: $(el).text().trim() || `Episode ${epNum}`, slug: epSlug });
       }
     });
+
+    // Fallback if ul.list not found
+    if (episodes.length === 0) {
+      const baseParts = cleanSlug.split('-');
+      const basePrefix = baseParts.length > 1 ? baseParts.slice(0, 2).join('-') : cleanSlug;
+      $('a[href]').each((_, el) => {
+        const href = $(el).attr('href');
+        if (!href || !EPISODE_LINK_RE.test(href)) return;
+        const epSlug = href.split('/').filter(Boolean).pop();
+        if (!epSlug.toLowerCase().includes(basePrefix.toLowerCase())) return;
+
+        const match = href.match(EPISODE_LINK_RE);
+        const epNum = parseInt(match[2], 10);
+        if (!episodes.find((e) => e.slug === epSlug)) {
+          episodes.push({ number: epNum, title: $(el).text().trim() || `Episode ${epNum}`, slug: epSlug });
+        }
+      });
+    }
+
     episodes.sort((a, b) => a.number - b.number);
 
     return { title, poster, synopsis, genres, episodes };
@@ -218,12 +223,10 @@ async function getKDramaDetail(slug) {
 }
 
 // 5. Stream KDrama
-// `episodeSlug` is e.g. "payback-2026-episode-9.html"
 async function getKDramaStream(episodeSlug) {
   const cleanSlug = episodeSlug.replace(/^\//, '');
   const targetUrl = `${BASE_URL}/${cleanSlug}`;
 
-  // Static extraction: finds the iframe src straight off the page.
   let embedUrl = null;
   try {
     const { data } = await axios.get(targetUrl, { headers });
@@ -235,7 +238,7 @@ async function getKDramaStream(episodeSlug) {
         const href = $(el).attr('href');
         if (href && /\/embed\//i.test(href)) {
           embedUrl = href;
-          return false; // break
+          return false;
         }
       });
     }
@@ -243,124 +246,84 @@ async function getKDramaStream(episodeSlug) {
     console.error('❌ Error Dramacool Stream (static):', error.message);
   }
 
-  // That embed URL is itself a JS-driven *player page* (loads its own UI,
-  // then fetches the real video), not a raw video file — opening it
-  // directly gets you a webpage, not something a native video player can
-  // just play. Drive a real browser to load it and sniff the network for
-  // the actual .m3u8/.mp4 request the player makes once it's running,
-  // clicking a "Server" button first if present — matching browserPool's
-  // original comment about this site's player needing exactly that.
-  //
-  // The subtitles are a SEPARATE resource (.vtt/.srt/.ass) that the
-  // player's own JS loads and attaches to its video element — grabbing
-  // only the raw video URL bypasses that entirely, which is why subtitles
-  // disappeared once playback moved outside the original player. Sniff
-  // for that request too and hand it back so the caller can attach it as
-  // its own subtitle track.
   let videoUrl = null;
   let subtitleUrl = null;
-  try {
-    const result = await withPage(async (page) => {
-      const videoHits = [];
-      const subtitleHits = [];
-      const onResponse = (response) => {
-        const url = response.url();
-        const contentType = (response.headers()['content-type'] || '').toLowerCase();
-        const looksLikeVideo =
-          /\.m3u8(\?|$)|\.mp4(\?|$)/i.test(url) ||
-          /mpegurl|video\/mp4|application\/dash\+xml|octet-stream.*\.(ts|m3u8)/i.test(contentType);
-        const looksLikeSubtitle = /\.vtt(\?|$)|\.srt(\?|$)|\.ass(\?|$)/i.test(url) || /text\/vtt/i.test(contentType);
-        if (looksLikeVideo) videoHits.push(url);
-        if (looksLikeSubtitle) subtitleHits.push(url);
-      };
-      page.on('response', onResponse);
 
-      await gotoWithRetry(page, targetUrl);
-
-      const clickedServerButton = await page.evaluate(() => {
-        const btn = Array.from(document.querySelectorAll('a, button')).find((el) =>
-          /server/i.test((el.textContent || '').trim())
-        );
-        if (btn) {
-          btn.click();
-          return true;
-        }
-        return false;
+  if (embedUrl) {
+    try {
+      const playerRes = await axios.get(embedUrl, {
+        headers: {
+          'User-Agent': headers['User-Agent'],
+          'Referer': BASE_URL
+        },
+        timeout: 8000
       });
-      if (clickedServerButton) {
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
-
-      // Many embed players wait for an actual user gesture (a click)
-      // before they start fetching video — headless Puppeteer never
-      // generates one on its own, so the player can just sit idle and
-      // never issue the request we're listening for. This is very likely
-      // why stream_url kept coming back as only the embed page URL. Click
-      // the iframe's on-page position: a real mouse event lands inside it
-      // even cross-origin, since it doesn't need to reach into the
-      // iframe's DOM the way page.evaluate would. Try it a few times,
-      // since some players need a first click just to unmute/dismiss an
-      // overlay before a second click actually starts playback.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const box = await page
-          .$eval('iframe', (el) => {
-            el.scrollIntoView({ block: 'center' });
-            const r = el.getBoundingClientRect();
-            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-          })
-          .catch(() => null);
-        if (box) await page.mouse.click(box.x, box.y);
-
-        // Also try triggering playback directly inside the iframe's own
-        // frame content — more reliable than a blind coordinate click when
-        // the frame isn't sandboxed against being scripted from outside.
-        const iframeSrc = await page.$eval('iframe', (el) => el.getAttribute('src')).catch(() => null);
-        if (iframeSrc) {
-          const frame = page.frames().find((f) => f.url() === iframeSrc || f.url().startsWith(iframeSrc.split('?')[0]));
-          if (frame) {
-            await frame
-              .evaluate(() => {
-                const v = document.querySelector('video');
-                if (v) {
-                  v.muted = true;
-                  v.play?.().catch(() => {});
-                } else {
-                  const playBtn = Array.from(document.querySelectorAll('button, div, a')).find((el) =>
-                    /play/i.test(el.className || '') || /play/i.test(el.getAttribute('aria-label') || '')
-                  );
-                  playBtn?.click();
-                }
-              })
-              .catch(() => {});
-          }
+      const $$ = cheerio.load(playerRes.data);
+      const payloadText = $$('#player-payload').html();
+      if (payloadText) {
+        const payload = JSON.parse(payloadText);
+        if (payload.source) videoUrl = payload.source;
+        if (payload.tracks && payload.tracks.length) {
+          const idSub = payload.tracks.find(t => /indonesia|id/i.test(t.label || ''));
+          const enSub = payload.tracks.find(t => /english|en/i.test(t.label || ''));
+          subtitleUrl = (idSub || enSub || payload.tracks[0])?.file || null;
         }
-
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        if (videoHits.length) break;
+      } else {
+        const match = playerRes.data.match(/(https?:\/\/[^\s"'<>]+\.(?:mp4|m3u8)[^\s"'<>]*)/i);
+        if (match) videoUrl = match[1];
       }
-
-      page.off('response', onResponse);
-      return {
-        video: videoHits.length ? videoHits[videoHits.length - 1] : null,
-        subtitle: subtitleHits.length ? subtitleHits[subtitleHits.length - 1] : null
-      };
-    });
-    videoUrl = result.video;
-    subtitleUrl = result.subtitle;
-
-    if (!videoUrl) {
-      console.warn(`⚠️  Dramacool: no video request caught on ${targetUrl} even after simulating clicks and stealth patches — this mirror likely actively detects automated browsers (confirmed directly elsewhere on this site's mirrors) or loads video through a mechanism with no interceptable direct file URL. embed_url is the fallback and needs to be rendered in a WebView/iframe.`);
+    } catch {
+      // ignore
     }
-    if (!subtitleUrl) {
-      console.warn(`⚠️  Dramacool: no subtitle request caught on ${targetUrl} — this mirror may hardsub (burn subtitles into the video) or load subtitles some other way.`);
-    }
-  } catch (error) {
-    console.error('❌ Error Dramacool Stream (browser):', error.message);
   }
 
-  // Prefer the real media URL when we managed to catch one; fall back to
-  // the embed page URL (still usable if the caller loads it in a WebView/
-  // iframe rather than a native player).
+  if (!videoUrl) {
+    try {
+      const result = await withPage(async (page) => {
+        const videoHits = [];
+        const subtitleHits = [];
+        const onResponse = (response) => {
+          const url = response.url();
+          const contentType = (response.headers()['content-type'] || '').toLowerCase();
+          const looksLikeVideo =
+            /\.m3u8(\?|$)|\.mp4(\?|$)/i.test(url) ||
+            /mpegurl|video\/mp4|application\/dash\+xml|octet-stream.*\.(ts|m3u8)/i.test(contentType);
+          const looksLikeSubtitle = /\.vtt(\?|$)|\.srt(\?|$)|\.ass(\?|$)/i.test(url) || /text\/vtt/i.test(contentType);
+          if (looksLikeVideo) videoHits.push(url);
+          if (looksLikeSubtitle) subtitleHits.push(url);
+        };
+        page.on('response', onResponse);
+
+        await gotoWithRetry(page, targetUrl);
+
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const box = await page
+            .$eval('iframe', (el) => {
+              el.scrollIntoView({ block: 'center' });
+              const r = el.getBoundingClientRect();
+              return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            })
+            .catch(() => null);
+          if (box) await page.mouse.click(box.x, box.y);
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          if (videoHits.length) break;
+        }
+
+        page.off('response', onResponse);
+        return {
+          video: videoHits.length ? videoHits[videoHits.length - 1] : null,
+          subtitle: subtitleHits.length ? subtitleHits[subtitleHits.length - 1] : null
+        };
+      });
+      if (result) {
+        if (result.video) videoUrl = result.video;
+        if (result.subtitle) subtitleUrl = result.subtitle;
+      }
+    } catch {
+      // browser fallback failed or puppeteer disabled
+    }
+  }
+
   return {
     episode_slug: episodeSlug,
     stream_url: videoUrl || embedUrl,

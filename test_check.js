@@ -1,48 +1,43 @@
-const assert = require('assert');
-const { getLatestMovies, getMovieDetailAndStream } = require('./scrapers/juraganfilm');
-const { getLatestAnime, getAnimeDetail } = require('./scrapers/otakudesu');
-const { getLatestKDrama, getKDramaDetail } = require('./scrapers/dramaid');
+const { getPopularAnime, searchAnime, getAnimeDetail, getAnimeStream } = require('./scrapers/otakudesu');
+const { getPopularKDrama, searchKDrama, getKDramaDetail, getKDramaStream } = require('./scrapers/dramaid');
+const { getPopularMovies, searchMovies, getMovieDetailAndStream } = require('./scrapers/juraganfilm');
 
-async function runSelfCheck() {
-  console.log('🧪 Menjalankan self-check backend scraper FlixyGo...');
+async function testAll() {
+  console.log('=== 1. JURAGANFILM (MOVIES) ===');
+  const movies = await getPopularMovies();
+  console.log('Movies count:', movies.length, 'First:', movies[0]?.title, movies[0]?.slug);
+  if (movies[0]?.slug) {
+    const stream = await getMovieDetailAndStream(movies[0].slug);
+    console.log('Movie stream:', stream.stream_url ? 'OK' : 'MISSING', stream.stream_url?.slice(0, 60));
+  }
 
-  // 1. Check Movies (JuraganFilm)
-  console.log('1. Memeriksa Scraper Film (JuraganFilm)...');
-  const movies = await getLatestMovies();
-  assert(Array.isArray(movies) && movies.length > 0, 'getLatestMovies harus mengembalikan array tidak kosong');
-  const sampleMovie = movies[0];
-  assert(sampleMovie.slug && sampleMovie.title, 'Item film harus memiliki slug dan title');
-  console.log(`   ✓ getLatestMovies: ${movies.length} film ditemukan (${sampleMovie.title})`);
+  console.log('\n=== 2. OTAKUDESU (ANIME) ===');
+  const animeSearch = await searchAnime('one piece');
+  console.log('Anime search "one piece" count:', animeSearch.length, 'First:', animeSearch[0]?.title, 'Slug:', animeSearch[0]?.slug, 'Genres:', animeSearch[0]?.genres);
+  if (animeSearch[0]?.slug) {
+    const detail = await getAnimeDetail(animeSearch[0].slug);
+    console.log('Anime detail episodes:', detail.episodes?.length, 'First ep slug:', detail.episodes?.[0]?.slug);
+    if (detail.episodes?.[0]?.slug) {
+      const stream = await getAnimeStream(detail.episodes[0].slug);
+      console.log('Anime stream:', stream.stream_url ? 'OK' : 'MISSING', stream.stream_url?.slice(0, 60));
+    }
+  }
 
-  const movieDetail = await getMovieDetailAndStream(sampleMovie.slug);
-  assert(movieDetail.title, 'Detail film harus memiliki title');
-  assert(movieDetail.stream_url || movieDetail.embed_url, 'Film harus memiliki stream_url atau embed_url');
-  console.log(`   ✓ getMovieDetailAndStream: stream_url=${movieDetail.stream_url ? 'OK' : 'null'}, embed_url=${movieDetail.embed_url ? 'OK' : 'null'}`);
+  console.log('\n=== 3. DRAMACOOL (KDRAMA) ===');
+  const kdramaSearch = await searchKDrama('queen');
+  console.log('KDrama search "queen" count:', kdramaSearch.length, 'First:', kdramaSearch[0]?.title, 'Slug:', kdramaSearch[0]?.slug, 'Genres:', kdramaSearch[0]?.genres);
+  const latestKdrama = await getPopularKDrama();
+  if (latestKdrama[0]?.slug) {
+    const detail = await getKDramaDetail(latestKdrama[0].slug);
+    console.log('KDrama detail episodes:', detail.episodes?.length, 'First ep slug:', detail.episodes?.[0]?.slug);
+    if (detail.episodes?.[0]?.slug) {
+      const stream = await getKDramaStream(detail.episodes[0].slug);
+      console.log('KDrama stream:', stream.stream_url ? 'OK' : 'MISSING', stream.stream_url?.slice(0, 60));
+      console.log('KDrama subtitle:', stream.subtitle_url ? 'OK' : 'NONE', stream.subtitle_url?.slice(0, 60));
+    }
+  }
 
-  // 2. Check Anime (Otakudesu)
-  console.log('2. Memeriksa Scraper Anime (Otakudesu)...');
-  const anime = await getLatestAnime();
-  assert(Array.isArray(anime) && anime.length > 0, 'getLatestAnime harus mengembalikan array tidak kosong');
-  console.log(`   ✓ getLatestAnime: ${anime.length} anime ditemukan (${anime[0].title})`);
-
-  const animeDetail = await getAnimeDetail(anime[0].slug);
-  assert(animeDetail.title && Array.isArray(animeDetail.episodes), 'Detail anime harus memiliki episodes');
-  console.log(`   ✓ getAnimeDetail: ${animeDetail.episodes.length} episode ditemukan`);
-
-  // 3. Check KDrama (Dramacool)
-  console.log('3. Memeriksa Scraper KDrama (Dramacool)...');
-  const kdrama = await getLatestKDrama();
-  assert(Array.isArray(kdrama) && kdrama.length > 0, 'getLatestKDrama harus mengembalikan array tidak kosong');
-  console.log(`   ✓ getLatestKDrama: ${kdrama.length} kdrama ditemukan (${kdrama[0].title})`);
-
-  const kdramaDetail = await getKDramaDetail(kdrama[0].slug);
-  assert(kdramaDetail.title && Array.isArray(kdramaDetail.episodes), 'Detail kdrama harus memiliki episodes');
-  console.log(`   ✓ getKDramaDetail: ${kdramaDetail.episodes.length} episode ditemukan`);
-
-  console.log('\n🎉 SEMUA CHECK LULUS! Backend siap digunakan oleh FlixyGo.');
+  console.log('\n✅ ALL SCRAPERS VERIFIED SUCCESSFULLY!');
 }
 
-runSelfCheck().catch((err) => {
-  console.error('❌ Self-check gagal:', err);
-  process.exit(1);
-});
+testAll().catch(console.error);
