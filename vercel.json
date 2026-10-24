@@ -1,13 +1,5 @@
 {
   "version": 2,
-  "env": {
-    "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD": "true"
-  },
-  "build": {
-    "env": {
-      "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD": "true"
-    }
-  },
   "rewrites": [
     {
       "source": "/(.*)",
